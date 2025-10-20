@@ -1,0 +1,145 @@
+String currentJobParentFolderName = currentBuild.fullProjectName.split('/')[0]
+String currentJobName = currentBuild.projectName
+//String paramValue = getParamValue(currentJobName)
+//String paramPath = getParamPath(currentJobName)
+
+
+// Get the location of the vmware library file
+// def getParamValue(String jobName) {
+
+//    def paramValue = "${env.JENKINS_HOME}/workspace/Infrastructure_Services/RHEL8Upgrade/jenkins/src/org/aci/infra/rhelupgradeLibrary.groovy"
+//    if (!paramValue) {
+//       throw new Exception("Failed to get value")
+//    }
+//    return paramValue
+// }
+
+// def getParamPath(String JobName) {
+
+//    def paramValue = "${env.JENKINS_HOME}/workspace/Infrastructure_Services/Testing/Infra_Library/pipelines/src/org/aci/infra/"
+//    if (!paramValue) {
+//       throw new Exception("Failed to get value")
+//    }
+//    return paramValue
+// }
+
+properties([
+    parameters([
+
+			// [$class: 'CascadeChoiceParameter', choiceType: 'PT_SINGLE_SELECT', description: 'Select Vmware Vcenter', filterLength: 1, name: 'Vmware_Vcenter', referencedParameters: '', randomName: 'env-100', script: [$class: 'GroovyScript', fallbackScript: [classpath: [], sandbox: false, script: 'return ["NOT APPLICABLE"]'], script: [classpath: [], sandbox: false, script: """
+			// 					import jenkins.model.*
+			// 					GroovyShell shell = new GroovyShell()
+			// 					def script = shell.parse(new File('$paramValue'))
+			// 					def VmwareCluster = script.getVmwareCluster()
+			// 					return VmwareCluster
+                                       
+
+        	// """]]],
+//stringParam(name: 'vm_name', defaultValue: 'ACI', description: 'Enter Virtual Machine Name'),
+//stringParam(name: 'vm_ipv4_address', defaultValue: '0.0.0.0', description: 'Enter Virtual Machine IPAddress'),
+//text description: 'Specify the IP of the server\'s to configure. One IP address per line', name: 'vm_ipv4_address'
+//stringParam(name: 'vm_username', defaultValue: 'Sysadmin', description: 'Enter Credentaials for VM for upgrade'),
+//password(name: 'vm_passwd', defaultValue: 'secret', description: 'Enter Password')
+    	])
+
+])
+
+//@Library('infra-shared-vmware-libraries')
+
+// Defining library functions
+//def rhelupgradeLibrary = new org.aci.infra.rhelupgradeLibrary()
+
+def formatMap(map) {
+  def formattedString = map.toString()
+  formattedString = formattedString.substring(1, formattedString.length() - 1)
+  return formattedString
+}
+
+
+pipeline {
+	
+	agent {
+  docker {
+			label "nxpifappsshv001"
+			//image 'nexus.ise.pos.net:18090/sharedsvcvm:1.0.8'
+			image 'nexus.ise.pos.net:18090/dcieimage:5.1.1'
+			// alwaysPull false
+			args '-v /var/run/docker.sock:/var/run/docker.sock -v /pxe/jenkins:/pxe/jenkins -v /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem:/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem -v /etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt:/etc/pki/ca-trust/extracted/openssl/ca-bundle.trust.crt -v /etc:/etc -v /var/log:/var/log' 
+    }
+}
+
+
+
+
+   options {
+        ansiColor('xterm')
+   }
+	environment {
+        inventoryfile = "/pxe/jenkins/workspace/Infrastructure_Services/hosts.ini_$BUILD_NUMBER"
+    
+ 	 }
+
+	parameters {
+  string defaultValue: 'AODSDO-', description: 'Patching CR#', name: 'CR_number'
+  text description: 'Specify the IP of the server\'s to configure. One IP address per line', name: 'vm_ipv4_address'
+  string defaultValue: 'sysadmin', description: 'The Ansible user.', name: 'vm_username'
+  password defaultValue: 'Password', description: '''The password for the Ansible user.
+  NOTE: It must be the same username / password combination if running against multiple IP addresses''', name: 'vm_passwd'
+  choice(name: 'Reboot_after_patching', choices: ['skip_reboot', 'reboot'], description: 'Reboot after patching?')
+  }
+    stages {
+
+        stage('Task 1: Checkout Code ') {
+          steps {
+					script {
+					//sh 'whoami'
+					sh 'hostname'
+					sh 'pwd'
+					sh 'ls -lrt'			
+					dir('aod_server_infrastructure') {
+					deleteDir()
+				}
+				withCredentials([sshUserPrivateKey(credentialsId: 'svc_dcie', keyFileVariable: 'SSH_KEY')]) {
+					// sh "GIT_SSH_COMMAND='ssh -i $SSH_KEY' git clone -b feature/vmprovision  ssh://svc_dcie@bitbucket.am.tsacorp.com:7999/cts/aod_server_infrastructure.git"}
+					sh "GIT_SSH_COMMAND='ssh -i $SSH_KEY' git clone -b master  ssh://svc_dcie@10.13.24.14:7999/cts/aod_server_infrastructure.git"}
+				
+				}
+            }
+				}
+
+    		stage('Task 2: Run RHEL pathing playbook') {
+			 
+				 steps {
+				 sh "echo [vmhosts] > ${inventoryfile}; pwd"
+				 sh 'for IP in ${vm_ipv4_address} ; do echo $IP >> ${inventoryfile} ; done'
+                 sh 'cat ${inventoryfile}'
+                // sh "for IP in ${vm_ipv4_address} ; do echo $IP >> ${inventoryfile} ; done"
+				dir('aod_server_infrastructure/ansible'){
+					script {
+					wrap([$class: 'MaskPasswordsBuildWrapper', varPasswordPairs: [[password: vm_passwd, var: 'PSWD']]]) {
+						withEnv(["PSWD="+vm_passwd ]) {
+											ansiblePlaybook colorized: true,
+														disableHostKeyChecking: true,
+														extras: " \"-e " +
+																	//"vm_name=${vm_name} " +
+																	"vm_ipv4_address=${vm_ipv4_address} " +
+																	"ansible_password=${PSWD} " +
+																	"ansible_become_pass=${PSWD} " +
+                                                                    "ansible_ssh_user=${vm_username} " +                                                                  
+																	"ansible_ssh_common_args='-o StrictHostKeyChecking=no' " +
+																	"host=vmhosts\" ",					
+														forks: 10,
+														inventory: "${inventoryfile}",
+														playbook: "tasks/pathing.yaml",
+														skippedTags: "${Reboot_after_patching}"
+						 }
+					}
+						 }
+							}
+					
+						}
+					
+				}
+
+}
+}		
